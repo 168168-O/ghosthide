@@ -124,6 +124,7 @@ static BOOL GHApplyInProcess(NSString *path, BOOL wantHide) {
         case 11: return @"系统里找不到 LSApplicationWorkspace。";
         case 12: return @"当前系统版本缺少所需方法。";
         case 13: return @"helper 内部异常（已捕获，未崩溃）。";
+        case 14: return @"刷新桌面需要 root，当前没拿到。";
         default:
             if (r > 13) return [NSString stringWithFormat:@"启动 helper 失败（errno=%d）。", r];
             return [NSString stringWithFormat:@"未知错误（code=%d）。", r];

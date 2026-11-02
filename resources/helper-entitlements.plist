@@ -6,5 +6,14 @@
 	<true/>
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
+	<!-- 与 TrollStore 自身 root helper 用到的权限保持一致，保证 lsd 接受调用 -->
+	<key>com.apple.private.persona-mgmt</key>
+	<true/>
+	<key>com.apple.private.coreservices.canmaplsdatabase</key>
+	<true/>
+	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+	<true/>
+	<key>com.apple.private.security.container-manager</key>
+	<true/>
 </dict>
 </plist>

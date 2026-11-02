@@ -6,9 +6,14 @@
 	<true/>
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
+	<!-- 关键：没有它 posix_spawn 的 persona 提权不生效（TrollStore 同款） -->
 	<key>com.apple.private.persona-mgmt</key>
 	<true/>
 	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.coreservices.canmaplsdatabase</key>
+	<true/>
+	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
 	<true/>
 </dict>
 </plist>

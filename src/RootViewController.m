@@ -112,10 +112,15 @@
             __strong typeof(weakSelf) self = weakSelf;
             if (!self) return;
             self.busy = NO;
-            if (r != 0) {
-                [self alert:[NSString stringWithFormat:
-                    @"刷新桌面失败（code=%d）。\n可以先锁屏再点亮，效果一样。", r]];
+            if (r == 0) return;   // 成功就不打扰
+            NSString *msg;
+            if (r == 14) {
+                msg = @"隐藏和恢复都是即时生效的，一般不需要点刷新。\n如果图标还留在桌面上，锁屏再点亮一次即可。";
+            } else {
+                msg = [NSString stringWithFormat:
+                    @"刷新桌面没成功（code=%d）。\n锁屏再点亮一次，效果一样。", r];
             }
+            [self alert:msg];
         });
     });
 }
@@ -148,7 +153,9 @@
     if (ip.row < 0 || (NSUInteger)ip.row >= self.apps.count) return c;  // 越界保护
 
     AppEntry *e = self.apps[(NSUInteger)ip.row];
-    c.textLabel.text = e.name ?: @"（未知）";
+    NSString *title = e.name.length ? e.name : @"（未知）";
+    if (e.isInputMethod) title = [title stringByAppendingString:@"（输入法）"];
+    c.textLabel.text = title;
     c.detailTextLabel.text = e.bid ?: @"";
 
     UISwitch *sw = (UISwitch *)c.accessoryView;
