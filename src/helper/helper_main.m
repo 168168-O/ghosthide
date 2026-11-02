@@ -3,6 +3,21 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <stdlib.h>
+#import <spawn.h>
+#import <sys/wait.h>
+
+extern char **environ;
+
+// iOS SDK 把 system() 标记为不可用，改用 posix_spawn 调 killall
+static int respring_now(void) {
+    pid_t pid = 0;
+    char *argv[] = { "/usr/bin/killall", "-9", "SpringBoard", NULL };
+    int rc = posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, argv, environ);
+    if (rc != 0) return rc;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return 0;
+}
 
 // GhostHide root helper
 // Usage: ghosthelper hide <appPath> | show <appPath> | respring
@@ -33,8 +48,7 @@ int main(int argc, char **argv, char **envp) {
         NSString *cmd = [NSString stringWithUTF8String:argv[1]];
 
         if ([cmd isEqualToString:@"respring"]) {
-            system("killall -9 SpringBoard");
-            return 0;
+            return respring_now();
         }
 
         if (argc < 3) return -2;
