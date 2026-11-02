@@ -18,6 +18,8 @@
 	<string>1</string>
 	<key>MinimumOSVersion</key>
 	<string>15.0</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>用于验证身份后才能打开 GhostHide。</string>
 	<key>TSRootBinaries</key>
 	<array>
 		<string>ghosthelper</string>

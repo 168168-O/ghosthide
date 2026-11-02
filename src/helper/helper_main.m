@@ -5,8 +5,13 @@
 #import <stdlib.h>
 #import <spawn.h>
 #import <sys/wait.h>
+#import <unistd.h>
 
 extern char **environ;
+
+// 返回码（与 App 侧 HideManager 一致）
+//   0 成功 /   1 API 返回 NO /   2 参数错误 /  10 没有 root
+//  11 拿不到工作区 / 12 方法不存在 / 13 内部异常
 
 // iOS SDK 把 system() 标记为不可用，改用 posix_spawn 调 killall
 static int respring_now(void) {
@@ -19,59 +24,71 @@ static int respring_now(void) {
     return 0;
 }
 
-// GhostHide root helper
-// Usage: ghosthelper hide <appPath> | show <appPath> | respring
-// Runs as root (spawned via persona-mgmt), unsandboxed.
-
-static BOOL callRegister(id workspace, NSURL *appURL) {
-    SEL modern = NSSelectorFromString(@"registerApplication:withOptions:error:");
-    if ([workspace respondsToSelector:modern]) {
-        BOOL (*fn)(id, SEL, NSURL *, NSDictionary *, NSError **) =
-            (BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend;
-        NSError *err = nil;
-        return fn(workspace, modern, appURL, @{@"LBLaunchOrigin": @"GhostHide"}, &err);
-    }
-    SEL legacy = NSSelectorFromString(@"registerApplication:");
-    BOOL (*fn2)(id, SEL, NSURL *) = (BOOL (*)(id, SEL, NSURL *))objc_msgSend;
-    return fn2(workspace, legacy, appURL);
-}
-
-static BOOL callUnregister(id workspace, NSURL *appURL) {
-    SEL sel = NSSelectorFromString(@"unregisterApplication:");
-    BOOL (*fn)(id, SEL, NSURL *) = (BOOL (*)(id, SEL, NSURL *))objc_msgSend;
-    return fn(workspace, sel, appURL);
+static id loadWorkspace(void) {
+    dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+    if (!wsClass) return nil;
+    if (![wsClass respondsToSelector:@selector(defaultWorkspace)]) return nil;
+    return [wsClass performSelector:@selector(defaultWorkspace)];
 }
 
 int main(int argc, char **argv, char **envp) {
     @autoreleasepool {
-        if (argc < 2) return -1;
-        NSString *cmd = [NSString stringWithUTF8String:argv[1]];
+        @try {
+            if (argc < 2) return 2;
+            NSString *cmd = argv[1] ? [NSString stringWithUTF8String:argv[1]] : nil;
+            if (!cmd) return 2;
 
-        if ([cmd isEqualToString:@"respring"]) {
-            return respring_now();
+            if ([cmd isEqualToString:@"respring"]) {
+                return respring_now();
+            }
+
+            if ([cmd isEqualToString:@"diag"]) {
+                return (geteuid() == 0) ? 0 : 10;
+            }
+
+            if (argc < 3) return 2;
+            NSString *appPath = argv[2] ? [NSString stringWithUTF8String:argv[2]] : nil;
+            if (appPath.length == 0) return 2;
+            if (![appPath hasSuffix:@".app"]) return 2;
+
+            BOOL wantHide = [cmd isEqualToString:@"hide"];
+            BOOL wantShow = [cmd isEqualToString:@"show"];
+            if (!wantHide && !wantShow) return 2;
+
+            if (geteuid() != 0) return 10;
+
+            id ws = loadWorkspace();
+            if (!ws) return 11;
+
+            NSURL *appURL = [NSURL fileURLWithPath:appPath];
+            if (!appURL) return 2;
+
+            BOOL ok = NO;
+            if (wantHide) {
+                SEL sel = NSSelectorFromString(@"unregisterApplication:");
+                if (![ws respondsToSelector:sel]) return 12;
+                BOOL (*fn)(id, SEL, NSURL *) = (BOOL (*)(id, SEL, NSURL *))objc_msgSend;
+                ok = fn(ws, sel, appURL);
+            } else {
+                SEL modern = NSSelectorFromString(@"registerApplication:withOptions:error:");
+                if ([ws respondsToSelector:modern]) {
+                    BOOL (*fn)(id, SEL, NSURL *, NSDictionary *, NSError **) =
+                        (BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend;
+                    NSError *err = nil;
+                    ok = fn(ws, modern, appURL, @{@"LBLaunchOrigin": @"GhostHide"}, &err);
+                } else {
+                    SEL legacy = NSSelectorFromString(@"registerApplication:");
+                    if (![ws respondsToSelector:legacy]) return 12;
+                    BOOL (*fn)(id, SEL, NSURL *) = (BOOL (*)(id, SEL, NSURL *))objc_msgSend;
+                    ok = fn(ws, legacy, appURL);
+                }
+            }
+            return ok ? 0 : 1;
+        } @catch (NSException *e) {
+            return 13;
+        } @catch (...) {
+            return 13;
         }
-
-        if (argc < 3) return -2;
-        NSString *appPath = [NSString stringWithUTF8String:argv[2]];
-        if (![appPath hasSuffix:@".app"]) return -3;
-
-        // Load LaunchServices so LSApplicationWorkspace is available
-        dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
-        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
-        if (!wsClass) return -4;
-        id ws = [wsClass performSelector:@selector(defaultWorkspace)];
-        if (!ws) return -5;
-
-        NSURL *appURL = [NSURL fileURLWithPath:appPath];
-        BOOL ok = NO;
-
-        if ([cmd isEqualToString:@"hide"]) {
-            ok = callUnregister(ws, appURL);
-        } else if ([cmd isEqualToString:@"show"]) {
-            ok = callRegister(ws, appURL);
-        } else {
-            return -6;
-        }
-        return ok ? 0 : 1;
     }
 }
