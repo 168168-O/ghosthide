@@ -17,8 +17,15 @@ jobs:
       - name: Build
         run: make
 
-      - name: Upload .tipa
+      - name: Verify package layout
+        run: |
+          unzip -l GhostHide.ipa | head -20
+          tar -tf GhostHide.tipa | head -10
+
+      - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
           name: GhostHide-tipa
-          path: GhostHide.tipa
+          path: |
+            GhostHide.ipa
+            GhostHide.tipa
