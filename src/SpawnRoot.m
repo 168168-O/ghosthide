@@ -9,10 +9,21 @@
 #import <dlfcn.h>
 #import <Security/Security.h>
 
-// iOS SDK 公开头文件没暴露 SecTask API，手动声明
+// iOS SDK 不允许直接链接 SecTask API，运行时 dlsym 解析
 typedef struct CF_BRIDGED_TYPE(id) SecTask *SecTaskRef;
-extern SecTaskRef SecTaskCreateWithSelfForCheck(CFTypeRef allocator);
-extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+static SecTaskRef (*pSecTaskCreateWithSelfForCheck)(CFTypeRef);
+static CFTypeRef (*pSecTaskCopyValueForEntitlement)(SecTaskRef, CFStringRef, CFErrorRef *);
+static BOOL gSecTaskResolved = NO;
+
+static void resolveSecTask(void) {
+    if (gSecTaskResolved) return;
+    gSecTaskResolved = YES;
+    dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
+    pSecTaskCreateWithSelfForCheck =
+        (SecTaskRef (*)(CFTypeRef))dlsym(RTLD_DEFAULT, "SecTaskCreateWithSelfForCheck");
+    pSecTaskCopyValueForEntitlement =
+        (CFTypeRef (*)(SecTaskRef, CFStringRef, CFErrorRef *))dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
+}
 
 extern char **environ;
 
@@ -103,15 +114,17 @@ int spawnRoot(NSString *path, NSArray *args) {
 
 NSString *personaProbe(void) {
     // 1) 本进程实际生效的权限（装到手机后系统认的那份）
-    // iOS SDK 公开头文件没暴露 SecTask API，手动声明
-    SecTaskRef task = SecTaskCreateWithSelfForCheck(NULL);
-    if (task) {
-        CFTypeRef v = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.private.persona-mgmt"), NULL);
-        BOOL hasPersona = v && ((__bridge NSNumber *)v).boolValue;
-        if (v) CFRelease(v);
-        CFRelease(task);
-        if (!hasPersona) {
-            return @"本进程没有 persona-mgmt 权限（签名丢失或被系统剥离）→ 提权必败";
+    resolveSecTask();
+    if (pSecTaskCreateWithSelfForCheck && pSecTaskCopyValueForEntitlement) {
+        SecTaskRef task = pSecTaskCreateWithSelfForCheck(NULL);
+        if (task) {
+            CFTypeRef v = pSecTaskCopyValueForEntitlement(task, CFSTR("com.apple.private.persona-mgmt"), NULL);
+            BOOL hasPersona = v && ((__bridge NSNumber *)v).boolValue;
+            if (v) CFRelease(v);
+            CFRelease(task);
+            if (!hasPersona) {
+                return @"本进程没有 persona-mgmt 权限（签名丢失或被系统剥离）→ 提权必败";
+            }
         }
     }
 

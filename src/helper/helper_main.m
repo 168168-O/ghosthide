@@ -12,10 +12,21 @@
 #import <sys/sysctl.h>
 #import <Security/Security.h>
 
-// iOS SDK 公开头文件没暴露 SecTask API，手动声明
+// iOS SDK 不允许直接链接 SecTask API，运行时 dlsym 解析
 typedef struct CF_BRIDGED_TYPE(id) SecTask *SecTaskRef;
-extern SecTaskRef SecTaskCreateWithSelfForCheck(CFTypeRef allocator);
-extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+static SecTaskRef (*pSecTaskCreateWithSelfForCheck)(CFTypeRef);
+static CFTypeRef (*pSecTaskCopyValueForEntitlement)(SecTaskRef, CFStringRef, CFErrorRef *);
+static BOOL gSecTaskResolved = NO;
+
+static void resolveSecTask(void) {
+    if (gSecTaskResolved) return;
+    gSecTaskResolved = YES;
+    dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
+    pSecTaskCreateWithSelfForCheck =
+        (SecTaskRef (*)(CFTypeRef))dlsym(RTLD_DEFAULT, "SecTaskCreateWithSelfForCheck");
+    pSecTaskCopyValueForEntitlement =
+        (CFTypeRef (*)(SecTaskRef, CFStringRef, CFErrorRef *))dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
+}
 
 extern char **environ;
 

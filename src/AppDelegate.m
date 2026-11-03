@@ -1,13 +1,12 @@
 #import "AppDelegate.h"
-#import "RootViewController.h"
+#import "CalculatorViewController.h"
 
 @implementation AppDelegate
 
+// 桌面上它就是一个计算器；输密码（默认 0520）再按 = 才进隐藏列表
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.rootViewController =
-        [[UINavigationController alloc] initWithRootViewController:
-            [[RootViewController alloc] initWithStyle:UITableViewStylePlain]];
+    self.window.rootViewController = [[CalculatorViewController alloc] init];
     [self.window makeKeyAndVisible];
     return YES;
 }

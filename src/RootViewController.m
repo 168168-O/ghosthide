@@ -16,7 +16,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.title = @"GhostHide";
+    self.title = @"工具箱";
     self.apps = [NSMutableArray new];
 
     self.navigationItem.rightBarButtonItems = @[
@@ -29,11 +29,16 @@
                                         target:self
                                         action:@selector(restoreAllTapped)]
     ];
-    self.navigationItem.leftBarButtonItem =
+    self.navigationItem.leftBarButtonItems = @[
         [[UIBarButtonItem alloc] initWithTitle:@"自检"
                                          style:UIBarButtonItemStylePlain
                                         target:self
-                                        action:@selector(showDiagnose)];
+                                        action:@selector(showDiagnose)],
+        [[UIBarButtonItem alloc] initWithTitle:@"改密码"
+                                         style:UIBarButtonItemStylePlain
+                                        target:self
+                                        action:@selector(changePasswordTapped)]
+    ];
 
     // 下拉刷新列表（扫描放在子线程，避免卡界面）
     UIRefreshControl *rc = [UIRefreshControl new];
@@ -132,6 +137,34 @@
 
 - (void)showDiagnose {
     [self alert:[[HideManager shared] diagnose]];
+}
+
+#pragma mark - 改密码
+
+- (void)changePasswordTapped {
+    if (self.presentedViewController) return;
+
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"修改进入密码"
+                         message:@"新的密码至少 3 位。以后打开计算器，输入它再按 = 就能进来。\n\n请务必记牢，忘了就只能重装本工具。"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"新密码";
+        tf.keyboardType = UIKeyboardTypeNumberPad;
+        tf.secureTextEntry = YES;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        NSString *v = a.textFields.firstObject.text ?: @"";
+        if (v.length >= 3) {
+            [[NSUserDefaults standardUserDefaults] setObject:v forKey:@"gh_secret_code"];
+            [self alert:@"密码已保存。"];
+        } else {
+            [self alert:@"密码至少 3 位，这次没有改动。"];
+        }
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 #pragma mark - 全部恢复
