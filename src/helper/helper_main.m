@@ -48,9 +48,11 @@ static void diagLine(NSString *s) {
 
 // 读取自己实际生效的权限（安装后系统认的那个，而不是我们嵌入的）
 static NSString *entValue(NSString *key) {
-    SecTaskRef task = SecTaskCreateWithSelfForCheck(NULL);
+    resolveSecTask();
+    if (!pSecTaskCreateWithSelfForCheck || !pSecTaskCopyValueForEntitlement) return @"SecTask不可用";
+    SecTaskRef task = pSecTaskCreateWithSelfForCheck(NULL);
     if (!task) return @"SecTask创建失败";
-    CFTypeRef v = SecTaskCopyValueForEntitlement(task, (__bridge CFStringRef)key, NULL);
+    CFTypeRef v = pSecTaskCopyValueForEntitlement(task, (__bridge CFStringRef)key, NULL);
     CFRelease(task);
     if (!v) return @"无";
     if (CFGetTypeID(v) == CFBooleanGetTypeID()) {
