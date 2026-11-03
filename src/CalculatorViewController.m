@@ -179,18 +179,14 @@ static NSString *GHSecretCode(void) {
 }
 
 - (void)refreshDisplay {
-    NSString *text = self.current ?: @"0";
-    // 000 开头的多余零去掉（简单处理）
-    while (text.length > 1 && [text hasPrefix:@"0"] && ![text hasPrefix:@"0."] ) {
-        text = [text substringFromIndex:1];
-    }
-    self.display.text = text;
+    // 原样显示（打头的 0 不能抹掉，否则看不出密码输没输对）
+    self.display.text = self.current ?: @"0";
 }
 
 - (void)pressDigit:(NSString *)d {
+    // 直接往后拼（不吞打头的 0，否则密码 0520 输不进去）
     if (self.typingNumber) {
-        self.current = [self.current isEqualToString:@"0"] ? d
-                       : [self.current stringByAppendingString:d];
+        self.current = [self.current stringByAppendingString:d];
     } else {
         self.current = d;
         self.typingNumber = YES;
