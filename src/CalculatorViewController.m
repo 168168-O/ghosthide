@@ -14,6 +14,7 @@ static NSString *GHSecretCode(void) {
 @property (copy) NSString *operation;    // + - × ÷
 @property (assign) BOOL typingNumber;    // 正在输入新数？
 @property (strong) NSMutableArray *keys; // 按钮，tag = 行*10+列
+@property (strong) UILabel *versionLabel; // 底部小版本号，方便核对装的是哪版
 @end
 
 @implementation CalculatorViewController
@@ -51,8 +52,7 @@ static NSString *GHSecretCode(void) {
 }
 
 - (void)buildUI {
-    self.display = [UILabel new];
-    self.display.text = @"0";
+    self.display = [UILabel new];    self.display.text = @"0";
     self.display.textColor = [UIColor whiteColor];
     self.display.font = [UIFont monospacedDigitSystemFontOfSize:60 weight:UIFontWeightLight];
     self.display.textAlignment = NSTextAlignmentRight;
@@ -61,6 +61,15 @@ static NSString *GHSecretCode(void) {
     [self.view addSubview:self.display];
 
     self.keys = [NSMutableArray new];
+
+    self.versionLabel = [UILabel new];
+    NSString *ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    self.versionLabel.text = [NSString stringWithFormat:@"Calculator %@", ver ?: @"?"];
+    self.versionLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.35];
+    self.versionLabel.font = [UIFont systemFontOfSize:12];
+    self.versionLabel.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.versionLabel];
+
     UIColor *dark  = [UIColor colorWithWhite:0.19 alpha:1];   // 数字键
     UIColor *light = [UIColor colorWithWhite:0.72 alpha:1];   // 功能键
     UIColor *orange = [UIColor colorWithRed:1.0 green:0.45 blue:0.10 alpha:1]; // 运算键
@@ -126,6 +135,10 @@ static NSString *GHSecretCode(void) {
         }
         b.frame = f;
     }
+
+    CGFloat bottomInset = self.view.safeAreaInsets.bottom;
+    self.versionLabel.frame = CGRectMake(safe.origin.x, CGRectGetMaxY(self.view.bounds) - bottomInset - 24,
+                                         self.view.bounds.size.width, 16);
 }
 
 #pragma mark - 按键逻辑
