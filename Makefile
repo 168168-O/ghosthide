@@ -1,6 +1,6 @@
 TARGET := iphoneos
 CC := xcrun -sdk $(TARGET) clang
-CFLAGS := -arch arm64 -arch arm64e -miphoneos-version-min=15.0 -fobjc-arc -O2
+CFLAGS := -arch arm64 -miphoneos-version-min=15.0 -fobjc-arc -O2
 LDFLAGS_APP := -framework UIKit -framework Foundation -framework LocalAuthentication -framework MobileCoreServices -framework Security -framework CoreGraphics -lobjc
 LDFLAGS_HELPER := -framework Foundation -framework Security -lobjc
 APP := build/GhostHide.app
