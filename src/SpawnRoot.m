@@ -6,6 +6,8 @@
 #import <string.h>
 #import <errno.h>
 #import <unistd.h>
+#import <dlfcn.h>
+#import <Security/Security.h>
 
 extern char **environ;
 
@@ -92,4 +94,30 @@ int spawnRoot(NSString *path, NSArray *args) {
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 126 + WTERMSIG(status);   // 被信号杀掉：126+ 表示异常
     return 0;
+}
+
+NSString *personaProbe(void) {
+    // 1) 本进程实际生效的权限（装到手机后系统认的那份）
+    NSString *(*secTaskSelf)(void) = (NSString *(*)(void))dlsym(RTLD_DEFAULT, "SecTaskCreateWithSelfForCheck");
+    if (secTaskSelf) {
+        SecTaskRef task = SecTaskCreateWithSelfForCheck(NULL);
+        if (task) {
+            CFTypeRef v = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.private.persona-mgmt"), NULL);
+            BOOL hasPersona = v && ((__bridge NSNumber *)v).boolValue;
+            if (v) CFRelease(v);
+            CFRelease(task);
+            if (!hasPersona) {
+                return @"本进程没有 persona-mgmt 权限（签名丢失或被系统剥离）→ 提权必败";
+            }
+        }
+    }
+
+    // 2) 实测 set_persona_np 是否被接受
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    int rc = posix_spawnattr_set_persona_np(&attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+    posix_spawnattr_destroy(&attr);
+
+    if (rc == 0) return @"persona 接口被系统接受（rc=0），但 helper 仍没拿到 root → 子进程被降权";
+    return [NSString stringWithFormat:@"persona 接口被系统拒绝（rc=%d, %s）→ 本进程无权提权", rc, strerror(rc)];
 }

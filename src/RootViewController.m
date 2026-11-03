@@ -137,9 +137,14 @@
 #pragma mark - 全部恢复
 
 - (void)restoreAllTapped {
-    NSUInteger n = [[HideManager shared] hiddenCount];
-    if (n == 0) {
-        [self alert:@"现在没有隐藏任何 App，不用恢复。"];
+    // 以系统实际状态为准（列表里"已隐藏"的），不依赖本地记录
+    NSMutableArray *hidden = [NSMutableArray array];
+    for (AppEntry *e in self.apps) {
+        if ([[HideManager shared] isHidden:e]) [hidden addObject:e];
+    }
+
+    if (hidden.count == 0) {
+        [self alert:@"列表里没有处于隐藏状态的 App，不用恢复。\n\n如果桌面少了图标，先下拉刷新一下列表再看。"];
         return;
     }
     if (self.presentedViewController) return;
@@ -147,36 +152,38 @@
     UIAlertController *a = [UIAlertController
         alertControllerWithTitle:@"全部恢复"
                          message:[NSString stringWithFormat:
-                            @"把 %lu 个 App 全部恢复成正常显示？\n恢复后桌面图标会立刻回来，数据一点不动。",
-                            (unsigned long)n]
+                            @"把 %lu 个隐藏的 App 全部恢复成正常显示？\n恢复后桌面图标会回来，数据一点不动。",
+                            (unsigned long)hidden.count]
                   preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [a addAction:[UIAlertAction actionWithTitle:@"全部恢复"
                                          style:UIAlertActionStyleDestructive
                                        handler:^(UIAlertAction *x) {
-        [weakSelf doRestoreAll];
+        [weakSelf doRestoreHidden:hidden];
     }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 
-- (void)doRestoreAll {
+- (void)doRestoreHidden:(NSArray *)hidden {
     if (self.busy) return;
     self.busy = YES;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSUInteger failed = [[HideManager shared] restoreAll];
+        NSUInteger failed = [[HideManager shared] restoreApps:hidden];
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) self = weakSelf;
             if (!self) return;
             self.busy = NO;
             [self reloadApps];
             if (failed == 0) {
-                [self alert:@"已全部恢复。\n如果桌面图标没立刻回来，锁屏再点亮一次。"];
+                [self alert:[NSString stringWithFormat:
+                    @"已恢复 %lu 个。\n如果桌面图标没立刻回来，锁屏再点亮一次。",
+                    (unsigned long)hidden.count]];
             } else {
                 [self alert:[NSString stringWithFormat:
-                    @"有 %lu 个没能恢复。\n再点一次「全部恢复」；如果还是不行，把 App 名发我。",
-                    (unsigned long)failed]];
+                    @"%lu 个里有 %lu 个没恢复成功。\n再点一次「全部恢复」；还不行就点「自检」把内容发我。",
+                    (unsigned long)hidden.count, (unsigned long)failed]];
             }
         });
     });

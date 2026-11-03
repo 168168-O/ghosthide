@@ -231,6 +231,16 @@ static BOOL GHOpenBundle(NSString *bid) {
     return failed;
 }
 
+// 按实际列表恢复（列表由 AppScanner 扫出，隐藏态不依赖本地记录）
+- (NSUInteger)restoreApps:(NSArray *)apps {
+    NSUInteger failed = 0;
+    for (AppEntry *e in apps) {
+        if (![e isKindOfClass:[AppEntry class]]) continue;
+        if (![self show:e]) failed++;
+    }
+    return failed;
+}
+
 - (BOOL)isHidden:(AppEntry *)e {
     if (!e.bid) return NO;
     [_lock lock];
@@ -252,11 +262,26 @@ static BOOL GHOpenBundle(NSString *bid) {
     BOOL exists = helper && [[NSFileManager defaultManager] isExecutableFileAtPath:helper];
     [s appendFormat:@"helper 存在：%@\n", exists ? @"是" : @"否"];
 
+    // App 进程自身实测 persona 是否被接受（不用等 helper 就能判断提权为什么失败）
+    [s appendFormat:@"提权探测：%@\n", personaProbe()];
+
     if (exists) {
         int r = spawnRoot(helper, @[ @"diag" ]);
-        NSString *root = (r == 0) ? @"成功（root 可用）"
-                                  : (r == 10 ? @"失败：没有 root 权限" : [NSString stringWithFormat:@"失败（code=%d）", r]);
-        [s appendFormat:@"helper 提权：%@\n", root];
+        [s appendFormat:@"helper 提权：%@\n",
+            (r == 0) ? @"成功（root 可用）" :
+            (r == 10 ? @"失败：没拿到 root" :
+            [NSString stringWithFormat:@"失败（code=%d）", r])];
+
+        // helper 在 /var/tmp 留下的实测数据（实际生效的权限）
+        NSString *diagFile = @"/var/tmp/ghosthide-diag.txt";
+        NSString *content = [NSString stringWithContentsOfFile:diagFile
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:nil];
+        if (content.length) {
+            [s appendFormat:@"—— helper 实测 ——\n%@\n", content];
+        } else {
+            [s appendString:@"（helper 没能写入诊断文件，多半也没有 no-sandbox 权限）\n"];
+        }
     }
 
     [s appendFormat:@"进程内工作区：%@\n", GHWorkspace() ? @"可用" : @"不可用"];

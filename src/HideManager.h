@@ -12,6 +12,8 @@
 - (NSUInteger)hiddenCount;
 // 一键全部恢复（返回失败的个数）
 - (NSUInteger)restoreAll;
+// 按扫描出的列表恢复（不依赖本地记录）
+- (NSUInteger)restoreApps:(NSArray *)apps;
 // 最近一次失败的人话原因（nil 表示上次成功）
 - (NSString *)lastError;
 // 自检：返回可读的诊断文本，用于排查“为什么没生效”
