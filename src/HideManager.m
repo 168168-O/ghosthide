@@ -104,6 +104,23 @@ static BOOL GHApplyInProcess(NSString *path, BOOL wantHide) {
     }
 }
 
+#pragma mark - 打开
+
+// 请系统启动一个 App（只有在“系统登记着它”的时候才会成功）
+static BOOL GHOpenBundle(NSString *bid) {
+    if (bid.length == 0) return NO;
+    @try {
+        id ws = GHWorkspace();
+        if (!ws) return NO;
+        SEL sel = NSSelectorFromString(@"openApplicationWithBundleID:");
+        if (![ws respondsToSelector:sel]) return NO;
+        BOOL (*fn)(id, SEL, NSString *) = (BOOL (*)(id, SEL, NSString *))objc_msgSend;
+        return fn(ws, sel, bid);
+    } @catch (NSException *e) {
+        return NO;
+    }
+}
+
 #pragma mark - 执行
 
 - (int)runHelper:(NSString *)verb path:(NSString *)path {
@@ -161,12 +178,69 @@ static BOOL GHApplyInProcess(NSString *path, BOOL wantHide) {
 - (BOOL)hide:(AppEntry *)e { return [self perform:YES entry:e]; }
 - (BOOL)show:(AppEntry *)e { return [self perform:NO  entry:e]; }
 
+// 打开：没藏的直接开；藏着的先临时登记回来、启动后再自动藏回去
+- (BOOL)openEntry:(AppEntry *)e {
+    if (!e || e.bid.length == 0) {
+        self.lastErrorMessage = @"这个 App 的信息不完整，没法打开。";
+        return NO;
+    }
+
+    if (![self isHidden:e]) {
+        BOOL ok = GHOpenBundle(e.bid);
+        self.lastErrorMessage = ok ? nil : @"系统拒绝启动它。可以先从桌面点一次，再回来隐藏。";
+        return ok;
+    }
+
+    // 已隐藏：先恢复登记，否则系统里根本没有它，启动必然失败
+    if (![self show:e]) return NO;          // show 里已经写好失败原因
+    usleep(400 * 1000);                      // 等系统把登记写进去
+
+    BOOL ok = GHOpenBundle(e.bid);
+    if (!ok) self.lastErrorMessage = @"临时恢复成功，但系统没能启动它。";
+
+    // 1.5 秒后重新藏回去：正在运行的进程不受“注销登记”影响
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (self) [self hide:e];
+    });
+    return ok;
+}
+
+- (NSUInteger)hiddenCount {
+    [_lock lock];
+    NSUInteger n = _map.count;
+    [_lock unlock];
+    return n;
+}
+
+- (NSUInteger)restoreAll {
+    NSDictionary *snapshot;
+    [_lock lock];
+    snapshot = [_map copy];
+    [_lock unlock];
+
+    NSUInteger failed = 0;
+    for (NSString *bid in snapshot) {
+        AppEntry *e = [AppEntry new];
+        e.bid = bid;
+        e.path = snapshot[bid];
+        if (![self show:e]) failed++;
+    }
+    return failed;
+}
+
 - (BOOL)isHidden:(AppEntry *)e {
     if (!e.bid) return NO;
     [_lock lock];
-    BOOL v = (_map[e.bid] != nil);
+    BOOL recorded = (_map[e.bid] != nil);
     [_lock unlock];
-    return v;
+    if (recorded) return YES;
+
+    // 记录可能丢（重装 App 等），用系统状态兜底：系统里查不到登记，就是被注销了
+    if (e.registered) return NO;
+    return e.path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:e.path];
 }
 
 #pragma mark - 诊断

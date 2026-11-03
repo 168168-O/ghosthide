@@ -19,11 +19,16 @@
     self.title = @"GhostHide";
     self.apps = [NSMutableArray new];
 
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"刷新桌面"
+    self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithTitle:@"刷新"
                                          style:UIBarButtonItemStylePlain
                                         target:self
-                                        action:@selector(respring)];
+                                        action:@selector(respring)],
+        [[UIBarButtonItem alloc] initWithTitle:@"全部恢复"
+                                         style:UIBarButtonItemStyleDone
+                                        target:self
+                                        action:@selector(restoreAllTapped)]
+    ];
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithTitle:@"自检"
                                          style:UIBarButtonItemStylePlain
@@ -129,6 +134,54 @@
     [self alert:[[HideManager shared] diagnose]];
 }
 
+#pragma mark - 全部恢复
+
+- (void)restoreAllTapped {
+    NSUInteger n = [[HideManager shared] hiddenCount];
+    if (n == 0) {
+        [self alert:@"现在没有隐藏任何 App，不用恢复。"];
+        return;
+    }
+    if (self.presentedViewController) return;
+
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"全部恢复"
+                         message:[NSString stringWithFormat:
+                            @"把 %lu 个 App 全部恢复成正常显示？\n恢复后桌面图标会立刻回来，数据一点不动。",
+                            (unsigned long)n]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [a addAction:[UIAlertAction actionWithTitle:@"全部恢复"
+                                         style:UIAlertActionStyleDestructive
+                                       handler:^(UIAlertAction *x) {
+        [weakSelf doRestoreAll];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)doRestoreAll {
+    if (self.busy) return;
+    self.busy = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger failed = [[HideManager shared] restoreAll];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.busy = NO;
+            [self reloadApps];
+            if (failed == 0) {
+                [self alert:@"已全部恢复。\n如果桌面图标没立刻回来，锁屏再点亮一次。"];
+            } else {
+                [self alert:[NSString stringWithFormat:
+                    @"有 %lu 个没能恢复。\n再点一次「全部恢复」；如果还是不行，把 App 名发我。",
+                    (unsigned long)failed]];
+            }
+        });
+    });
+}
+
 - (void)alert:(NSString *)msg {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:nil
                                                               message:msg
@@ -156,7 +209,15 @@
     NSString *title = e.name.length ? e.name : @"（未知）";
     if (e.isInputMethod) title = [title stringByAppendingString:@"（输入法）"];
     c.textLabel.text = title;
-    c.detailTextLabel.text = e.bid ?: @"";
+
+    BOOL hidden = [[HideManager shared] isHidden:e];
+    if (hidden) {
+        c.detailTextLabel.text = @"已隐藏 · 点这一行直接打开";
+        c.detailTextLabel.textColor = [UIColor systemBlueColor];
+    } else {
+        c.detailTextLabel.text = e.bid ?: @"";
+        c.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    }
 
     UISwitch *sw = (UISwitch *)c.accessoryView;
     if (![sw isKindOfClass:[UISwitch class]]) {
@@ -169,8 +230,32 @@
     return c;
 }
 
-- (void)toggled:(UISwitch *)sw {
-    if (sw.tag < 0 || (NSUInteger)sw.tag >= self.apps.count) {  // 越界保护
+// 点一下这一行 = 直接打开这个 App（藏着的也能开）
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.row < 0 || (NSUInteger)ip.row >= self.apps.count) return;
+    if (self.busy) return;
+
+    AppEntry *e = self.apps[(NSUInteger)ip.row];
+    self.busy = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        HideManager *mgr = [HideManager shared];
+        BOOL ok = [mgr openEntry:e];
+        NSString *reason = [mgr lastError];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.busy = NO;
+            if (!ok) {
+                [self alert:[NSString stringWithFormat:@"没能打开「%@」。\n%@",
+                                                        e.name ?: e.bid, reason ?: @"原因未知。"]];
+            }
+        });
+    });
+}
+
+- (void)toggled:(UISwitch *)sw {    if (sw.tag < 0 || (NSUInteger)sw.tag >= self.apps.count) {  // 越界保护
         [sw setOn:!sw.on animated:YES];
         return;
     }
@@ -194,11 +279,12 @@
             NSString *msg;
             if (ok) {
                 msg = wantHide
-                    ? @"已隐藏：桌面、App 资源库、设置、搜索全部看不到。\nApp 数据完好，随时可恢复。"
+                    ? @"已隐藏：桌面、App 资源库、设置、搜索里都看不到了。\n\n你自己要用它：在这个列表里点一下它的名字就能打开，用完自动再藏回去。"
                     : @"已恢复显示。";
             } else {
                 msg = [NSString stringWithFormat:@"这个 App 没能隐藏。\n%@", reason ?: @"原因未知。"];
             }
+            [self.tableView reloadData];
             [self alert:msg];
         });
     });

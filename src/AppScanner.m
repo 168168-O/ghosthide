@@ -53,8 +53,26 @@ static NSString *localizedNameFromProxy(NSString *bid) {
     return nil;
 }
 
-// 键盘类 App 一旦被隐藏，打字可能直接失效，列表里要标出来
-static BOOL isKeyboardApp(NSString *appPath) {
+// 系统是否还登记着这个 App：查不到 proxy 说明它被注销了（隐藏态）
+static BOOL proxyExists(NSString *bid) {
+    static Class proxyClass = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+        proxyClass = NSClassFromString(@"LSApplicationProxy");
+    });
+    if (!proxyClass) return YES;   // 查不了就别误判成“已隐藏”
+    @try {
+        SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        if (![proxyClass respondsToSelector:sel]) return YES;
+        id (*fn)(id, SEL, NSString *) = (id (*)(id, SEL, NSString *))objc_msgSend;
+        return fn(proxyClass, sel, bid) != nil;
+    } @catch (...) {
+        return YES;
+    }
+}
+
+// 键盘类 App 一旦被隐藏，打字可能直接失效，列表里要标出来static BOOL isKeyboardApp(NSString *appPath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *plugins = [appPath stringByAppendingPathComponent:@"PlugIns"];
     NSArray *items = [fm contentsOfDirectoryAtPath:plugins error:nil];
@@ -125,6 +143,7 @@ static BOOL isKeyboardApp(NSString *appPath) {
             e.name = ([name isKindOfClass:[NSString class]] && [name length] > 0) ? name : item;
 
             e.isInputMethod = isKeyboardApp(appPath);
+            e.registered = proxyExists(bid);
             [result addObject:e];
         }
     }

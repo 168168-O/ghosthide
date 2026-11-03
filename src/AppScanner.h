@@ -5,6 +5,7 @@
 @property (copy) NSString *bid;
 @property (copy) NSString *path;
 @property (assign) BOOL isInputMethod;   // 键盘类 App，隐藏后可能无法打字
+@property (assign) BOOL registered;      // 系统当前是否登记了它（NO = 此刻处于隐藏态）
 @end
 
 @interface AppScanner : NSObject
