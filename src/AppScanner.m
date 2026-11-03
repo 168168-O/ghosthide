@@ -129,9 +129,10 @@ static UIImage *normalizedIcon(UIImage *img) {
     if (!img) return nil;
     CGFloat scale = [UIScreen mainScreen].scale;
     CGSize target = CGSizeMake(58 * scale, 58 * scale);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = scale;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc]
-        initWithSize:target
-        format:@{ UIGraphicsImageRendererFormatScaleAttribute: @(scale) }];
+        initWithSize:target format:fmt];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [img drawInRect:CGRectMake(0, 0, target.width, target.height)];
     }];
