@@ -10,7 +10,7 @@ all: GhostHide.ipa GhostHide.tipa
 
 $(APP)/GhostHide: $(wildcard src/*.m) $(wildcard src/*.h)
 	@mkdir -p $(APP)
-	$(CC) $(CFLAGS) src/main.m src/AppDelegate.m src/RootViewController.m src/AppScanner.m src/HideManager.m src/SpawnRoot.m $(LDFLAGS_APP) -o $@
+	$(CC) $(CFLAGS) $(filter-out src/helper/%,$(wildcard src/*.m)) $(LDFLAGS_APP) -o $@
 
 $(APP)/ghosthelper: src/helper/helper_main.m
 	@mkdir -p $(APP)
