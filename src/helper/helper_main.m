@@ -12,6 +12,11 @@
 #import <sys/sysctl.h>
 #import <Security/Security.h>
 
+// iOS SDK 公开头文件没暴露 SecTask API，手动声明
+typedef struct CF_BRIDGED_TYPE(id) SecTask *SecTaskRef;
+extern SecTaskRef SecTaskCreateWithSelfForCheck(CFTypeRef allocator);
+extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+
 extern char **environ;
 
 // 返回码（与 App 侧 HideManager 一致）

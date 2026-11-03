@@ -9,6 +9,11 @@
 #import <dlfcn.h>
 #import <Security/Security.h>
 
+// iOS SDK 公开头文件没暴露 SecTask API，手动声明
+typedef struct CF_BRIDGED_TYPE(id) SecTask *SecTaskRef;
+extern SecTaskRef SecTaskCreateWithSelfForCheck(CFTypeRef allocator);
+extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
+
 extern char **environ;
 
 // 私有 API：给子进程指定 persona，从而以 root 身份运行。
@@ -98,17 +103,15 @@ int spawnRoot(NSString *path, NSArray *args) {
 
 NSString *personaProbe(void) {
     // 1) 本进程实际生效的权限（装到手机后系统认的那份）
-    NSString *(*secTaskSelf)(void) = (NSString *(*)(void))dlsym(RTLD_DEFAULT, "SecTaskCreateWithSelfForCheck");
-    if (secTaskSelf) {
-        SecTaskRef task = SecTaskCreateWithSelfForCheck(NULL);
-        if (task) {
-            CFTypeRef v = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.private.persona-mgmt"), NULL);
-            BOOL hasPersona = v && ((__bridge NSNumber *)v).boolValue;
-            if (v) CFRelease(v);
-            CFRelease(task);
-            if (!hasPersona) {
-                return @"本进程没有 persona-mgmt 权限（签名丢失或被系统剥离）→ 提权必败";
-            }
+    // iOS SDK 公开头文件没暴露 SecTask API，手动声明
+    SecTaskRef task = SecTaskCreateWithSelfForCheck(NULL);
+    if (task) {
+        CFTypeRef v = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.private.persona-mgmt"), NULL);
+        BOOL hasPersona = v && ((__bridge NSNumber *)v).boolValue;
+        if (v) CFRelease(v);
+        CFRelease(task);
+        if (!hasPersona) {
+            return @"本进程没有 persona-mgmt 权限（签名丢失或被系统剥离）→ 提权必败";
         }
     }
 
