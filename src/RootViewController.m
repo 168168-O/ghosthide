@@ -255,7 +255,8 @@
     });
 }
 
-- (void)toggled:(UISwitch *)sw {    if (sw.tag < 0 || (NSUInteger)sw.tag >= self.apps.count) {  // 越界保护
+- (void)toggled:(UISwitch *)sw {
+    if (sw.tag < 0 || (NSUInteger)sw.tag >= self.apps.count) {  // 越界保护
         [sw setOn:!sw.on animated:YES];
         return;
     }

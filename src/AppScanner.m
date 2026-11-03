@@ -72,7 +72,8 @@ static BOOL proxyExists(NSString *bid) {
     }
 }
 
-// 键盘类 App 一旦被隐藏，打字可能直接失效，列表里要标出来static BOOL isKeyboardApp(NSString *appPath) {
+// 键盘类 App 一旦被隐藏，打字可能直接失效，列表里要标出来
+static BOOL isKeyboardApp(NSString *appPath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *plugins = [appPath stringByAppendingPathComponent:@"PlugIns"];
     NSArray *items = [fm contentsOfDirectoryAtPath:plugins error:nil];
