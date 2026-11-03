@@ -249,6 +249,11 @@
     if (e.isInputMethod) title = [title stringByAppendingString:@"（输入法）"];
     c.textLabel.text = title;
 
+    // 图标（头像）：直接显示从 App 包里读出的图，圆角像桌面图标
+    c.imageView.image = e.icon;
+    c.imageView.layer.cornerRadius = 12;
+    c.imageView.layer.masksToBounds = YES;
+
     BOOL hidden = [[HideManager shared] isHidden:e];
     if (hidden) {
         c.detailTextLabel.text = @"已隐藏 · 点这一行直接打开";

@@ -92,6 +92,51 @@ static BOOL isKeyboardApp(NSString *appPath) {
     return NO;
 }
 
+// 直接从 App 安装包里读图标文件（隐藏态的系统图标拿不到，只能读包）
+static UIImage *iconFromAppPath(NSString *appPath, NSDictionary *info) {
+    NSMutableArray *bases = [NSMutableArray new];
+    NSDictionary *icons = [info[@"CFBundleIcons"] isKindOfClass:[NSDictionary class]]
+                            ? info[@"CFBundleIcons"] : nil;
+    id primary = icons ? icons[@"CFBundlePrimaryIcon"] : nil;
+    NSArray *files = nil;
+    if ([primary isKindOfClass:[NSDictionary class]]) files = primary[@"CFBundleIconFiles"];
+    if (![files isKindOfClass:[NSArray class]]) files = info[@"CFBundleIconFiles"];
+    if ([files isKindOfClass:[NSArray class]]) [bases addObjectsFromArray:files];
+    [bases addObjectsFromArray:@[ @"AppIcon60x60@2x", @"AppIcon60x60", @"AppIcon", @"Icon-60", @"Icon" ]];
+
+    for (NSString *base in bases) {
+        if (![base isKindOfClass:[NSString class]] || base.length == 0) continue;
+        NSArray *tries;
+        if ([base.pathExtension.lowercaseString isEqualToString:@"png"]) {
+            tries = @[ base ];
+        } else {
+            tries = @[ [base stringByAppendingPathExtension:@"png"],
+                       [base stringByAppendingString:@"@2x.png"],
+                       [base stringByAppendingString:@"@3x.png"] ];
+        }
+        for (NSString *f in tries) {
+            if (![f isKindOfClass:[NSString class]]) continue;
+            UIImage *img = [UIImage imageWithContentsOfFile:
+                            [appPath stringByAppendingPathComponent:f]];
+            if (img) return img;
+        }
+    }
+    return nil;
+}
+
+// 统一缩到 58pt，避免列表图标忽大忽小
+static UIImage *normalizedIcon(UIImage *img) {
+    if (!img) return nil;
+    CGFloat scale = [UIScreen mainScreen].scale;
+    CGSize target = CGSizeMake(58 * scale, 58 * scale);
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc]
+        initWithSize:target
+        format:@{ UIGraphicsImageRendererFormatScaleAttribute: @(scale) }];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [img drawInRect:CGRectMake(0, 0, target.width, target.height)];
+    }];
+}
+
 + (NSArray *)scan {
     NSMutableArray *result = [NSMutableArray new];
     NSString *root = @"/var/containers/Bundle/Application";
@@ -144,6 +189,7 @@ static BOOL isKeyboardApp(NSString *appPath) {
             e.name = ([name isKindOfClass:[NSString class]] && [name length] > 0) ? name : item;
 
             e.isInputMethod = isKeyboardApp(appPath);
+            e.icon = normalizedIcon(iconFromAppPath(appPath, info));
             e.registered = proxyExists(bid);
             [result addObject:e];
         }
