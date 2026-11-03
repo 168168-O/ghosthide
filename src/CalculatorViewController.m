@@ -51,7 +51,7 @@ static NSString *GHSecretCode(void) {
 }
 
 - (void)buildUI {
-    self.display = [[UILabel new] setText:@""];
+    self.display = [UILabel new];
     self.display.text = @"0";
     self.display.textColor = [UIColor whiteColor];
     self.display.font = [UIFont monospacedDigitSystemFontOfSize:60 weight:UIFontWeightLight];
@@ -106,9 +106,7 @@ static NSString *GHSecretCode(void) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
 
-    CGRect safe = self.view.safeAreaInsets != UIEdgeInsetsZero
-        ? UIEdgeInsetsInsetRect(self.view.bounds, self.view.safeAreaInsets)
-        : self.view.bounds;
+    CGRect safe = UIEdgeInsetsInsetRect(self.view.bounds, self.view.safeAreaInsets);
 
     CGFloat pad = 10;
     CGFloat keyH = 76;

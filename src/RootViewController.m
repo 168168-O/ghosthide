@@ -7,7 +7,6 @@
 
 @interface RootViewController ()
 @property (strong) NSMutableArray *apps;
-@property (assign) BOOL unlocked;
 @property (assign) BOOL busy;
 @end
 
