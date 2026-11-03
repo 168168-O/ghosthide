@@ -131,7 +131,21 @@ static NSString *GHSecretCode(void) {
 #pragma mark - 按键逻辑
 
 - (void)keyPressed:(UIButton *)b {
-    NSString *t = b.currentTitle;
+    @try {
+        [self handleKey:b.currentTitle];
+    } @catch (NSException *e) {
+        // 任何意外都不闪退，直接显示原因
+        UIAlertController *a = [UIAlertController
+            alertControllerWithTitle:@"按键出错"
+                             message:[NSString stringWithFormat:@"%@\n%@", e.name, e.reason]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        [self clearAll];
+    }
+}
+
+- (void)handleKey:(NSString *)t {
 
     // ★ 密码入口：输入密码后按 = 翻开隐藏列表
     if ([t isEqualToString:@"="]) {
@@ -161,7 +175,7 @@ static NSString *GHSecretCode(void) {
     }
     if ([t isEqualToString:@"÷"] || [t isEqualToString:@"×"] ||
         [t isEqualToString:@"−"] || [t isEqualToString:@"+"]) {
-        [self setOperation:t];
+        [self chooseOperation:t];
         return;
     }
     if ([t isEqualToString:@"."]) { [self pressDot]; return; }
@@ -170,11 +184,28 @@ static NSString *GHSecretCode(void) {
     [self pressDigit:t];
 }
 
+// 运算键高亮（像真计算器一样点亮，按数字后熄灭）
+- (void)highlightOperator:(NSString *)op {
+    for (UIButton *b in self.keys) {
+        NSString *t = b.currentTitle;
+        BOOL isOp = ([t isEqualToString:@"÷"] || [t isEqualToString:@"×"] ||
+                     [t isEqualToString:@"−"] || [t isEqualToString:@"+"] ||
+                     [t isEqualToString:@"="]);
+        if (isOp) {
+            BOOL on = (op != nil && [t isEqualToString:op]);
+            b.backgroundColor = on
+                ? [UIColor colorWithRed:1.0 green:0.75 blue:0.45 alpha:1]
+                : [UIColor colorWithRed:1.0 green:0.45 blue:0.10 alpha:1];
+        }
+    }
+}
+
 - (void)clearAll {
     self.current = @"0";
     self.previous = nil;
     self.operation = nil;
     self.typingNumber = NO;
+    [self highlightOperator:nil];
     [self refreshDisplay];
 }
 
@@ -204,11 +235,13 @@ static NSString *GHSecretCode(void) {
     [self refreshDisplay];
 }
 
-- (void)setOperation:(NSString *)op {
+// ★★ 之前叫 setOperation: 会和属性自动生成的 setter 撞名，无限递归闪退，已改名
+- (void)chooseOperation:(NSString *)op {
     if (self.operation && self.typingNumber) [self pressEquals];   // 连续运算
     self.previous = self.current ?: @"0";
     self.operation = op;
     self.typingNumber = NO;
+    [self highlightOperator:op];
 }
 
 - (double)apply:(double)a op:(NSString *)op b:(double)b {
@@ -235,6 +268,7 @@ static NSString *GHSecretCode(void) {
     self.operation = nil;
     self.previous = nil;
     self.typingNumber = NO;
+    [self highlightOperator:nil];
     [self refreshDisplay];
 }
 
