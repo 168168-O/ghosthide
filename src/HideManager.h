@@ -6,6 +6,8 @@
 - (BOOL)isHidden:(AppEntry *)e;
 - (BOOL)hide:(AppEntry *)e;
 - (BOOL)show:(AppEntry *)e;
+// 修复：按隐藏前拍的注册快照把这个 App 重新正确登记一遍（“恢复后打不开”用它）
+- (BOOL)repair:(AppEntry *)e;
 // 打开 App：已隐藏的会先临时登记、启动后自动重新藏回去
 - (BOOL)openEntry:(AppEntry *)e;
 // 当前记录了几个隐藏

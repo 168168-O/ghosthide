@@ -20,7 +20,8 @@
 @end
 
 @implementation HideManager {
-    NSMutableDictionary *_map;   // bundleID -> 原始 .app 路径
+    NSMutableDictionary *_map;      // bundleID -> 原始 .app 路径
+    NSMutableDictionary *_registry; // bundleID -> 隐藏前拍下的真实注册信息（快照）
     NSLock *_lock;
 }
 
@@ -50,12 +51,24 @@
     return [doc stringByAppendingPathComponent:@"hidden.plist"];
 }
 
+- (NSString *)registryPath {
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!doc) return nil;
+    return [doc stringByAppendingPathComponent:@"gh_registry.plist"];
+}
+
 - (void)loadState {
     NSDictionary *d = nil;
     NSString *p = [self recordPath];
     if (p) d = [NSDictionary dictionaryWithContentsOfFile:p];
     _map = [d isKindOfClass:[NSDictionary class]] ? [d mutableCopy] : [NSMutableDictionary new];
     if (!_map) _map = [NSMutableDictionary new];
+
+    NSDictionary *r = nil;
+    NSString *rp = [self registryPath];
+    if (rp) r = [NSDictionary dictionaryWithContentsOfFile:rp];
+    _registry = [r isKindOfClass:[NSDictionary class]] ? [r mutableCopy] : [NSMutableDictionary new];
+    if (!_registry) _registry = [NSMutableDictionary new];
 }
 
 - (void)save {
@@ -63,8 +76,82 @@
     if (!p) return;
     [_lock lock];
     NSDictionary *snapshot = [_map copy];
+    NSDictionary *reg = [_registry copy];
     [_lock unlock];
     [snapshot writeToFile:p atomically:YES];
+    NSString *rp = [self registryPath];
+    if (rp) [reg writeToFile:rp atomically:YES];
+}
+
+#pragma mark - 注册信息快照（关键：恢复时按原样还原，而不是猜）
+
+// 隐藏前把这个 App 在系统里的真实登记信息拍下来，恢复时照抄回去
+- (NSDictionary *)captureRegistryForBid:(NSString *)bid {
+    if (bid.length == 0) return nil;
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    if (!proxyClass) return nil;
+
+    @try {
+        SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        if (![proxyClass respondsToSelector:sel]) return nil;
+        id (*fn)(id, SEL, NSString *) = (id (*)(id, SEL, NSString *))objc_msgSend;
+        id proxy = fn(proxyClass, sel, bid);
+        if (!proxy) return nil;
+
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+
+        // 数据容器（最重要：接错了 App 就读不到自己的数据）
+        SEL dsel = NSSelectorFromString(@"dataContainerURL");
+        if ([proxy respondsToSelector:dsel]) {
+            id (*df)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            NSURL *u = df(proxy, dsel);
+            if ([u isKindOfClass:[NSURL class]] && u.path.length) d[@"Container"] = u.path;
+        }
+
+        NSDictionary *strKeys = @{
+            @"applicationType": @"ApplicationType",
+            @"signerIdentity": @"SignerIdentity",
+            @"signerOrganization": @"SignerOrganization",
+            @"codeInfoIdentifier": @"CodeInfoIdentifier"
+        };
+        for (NSString *getter in strKeys) {
+            SEL g = NSSelectorFromString(getter);
+            if (![proxy respondsToSelector:g]) continue;
+            id (*gf)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            id v = gf(proxy, g);
+            if ([v isKindOfClass:[NSString class]] && [v length]) d[strKeys[getter]] = v;
+        }
+
+        SEL vsel = NSSelectorFromString(@"signatureVersion");
+        if ([proxy respondsToSelector:vsel]) {
+            id (*vf)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            id v = vf(proxy, vsel);
+            if ([v isKindOfClass:[NSNumber class]]) d[@"SignatureVersion"] = v;
+        }
+
+        SEL hsel = NSSelectorFromString(@"isAdHocSigned");
+        if ([proxy respondsToSelector:hsel]) {
+            BOOL (*hf)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
+            d[@"IsAdHocSigned"] = @(hf(proxy, hsel));
+        }
+
+        return d.count ? d : nil;
+    } @catch (...) {
+        return nil;
+    }
+}
+
+// 把某一项的快照写成临时文件，交给 helper 读
+- (NSString *)writeSnapshotFileForBid:(NSString *)bid {
+    NSDictionary *snap = nil;
+    [_lock lock];
+    snap = [_registry[bid] copy];
+    [_lock unlock];
+    if (![snap isKindOfClass:[NSDictionary class]] || snap.count == 0) return nil;
+
+    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"gh_snap.plist"];
+    if (![snap writeToFile:tmp atomically:YES]) return nil;
+    return tmp;
 }
 
 - (NSString *)helperPath {
@@ -123,11 +210,12 @@ static BOOL GHOpenBundle(NSString *bid) {
 
 #pragma mark - 执行
 
-- (int)runHelper:(NSString *)verb path:(NSString *)path {
+- (int)runHelper:(NSString *)verb path:(NSString *)path extra:(NSString *)extra {
     NSString *helper = [self helperPath];
     if (!helper) return 3;
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm isExecutableFileAtPath:helper]) return 3;
+    if (extra.length) return spawnRoot(helper, @[ verb, path, extra ]);
     return spawnRoot(helper, @[ verb, path ]);
 }
 
@@ -154,7 +242,20 @@ static BOOL GHOpenBundle(NSString *bid) {
         return NO;
     }
 
-    int r = [self runHelper:(wantHide ? @"hide" : @"show") path:e.path];
+    // 隐藏前先把这个 App 的真实注册信息拍快照（容器、签名身份等），
+    // 恢复时照原样写回去，避免「恢复后 App 打不开」。
+    if (wantHide) {
+        NSDictionary *snap = [self captureRegistryForBid:e.bid];
+        if (snap.count) {
+            [_lock lock];
+            _registry[e.bid] = snap;
+            [_lock unlock];
+            [self save];
+        }
+    }
+
+    NSString *snapPath = wantHide ? nil : [self writeSnapshotFileForBid:e.bid];
+    int r = [self runHelper:(wantHide ? @"hide" : @"show") path:e.path extra:snapPath];
 
     BOOL ok = (r == 0);
     if (!ok) {
@@ -169,6 +270,34 @@ static BOOL GHOpenBundle(NSString *bid) {
         [_lock lock];
         if (wantHide) _map[e.bid] = e.path;
         else [_map removeObjectForKey:e.bid];
+        [_lock unlock];
+        [self save];
+    }
+    return ok;
+}
+
+// 修复：先注销掉可能写错的旧登记，再按快照原样登记回去
+- (BOOL)repair:(AppEntry *)e {
+    if (!e || e.path.length == 0 || e.bid.length == 0) {
+        self.lastErrorMessage = @"这个 App 的信息不完整。";
+        return NO;
+    }
+    if (!_registry[e.bid]) {
+        NSDictionary *snap = [self captureRegistryForBid:e.bid];
+        if (snap.count) {
+            [_lock lock];
+            _registry[e.bid] = snap;
+            [_lock unlock];
+            [self save];
+        }
+    }
+    NSString *snapPath = [self writeSnapshotFileForBid:e.bid];
+    int r = [self runHelper:@"repair" path:e.path extra:snapPath];
+    BOOL ok = (r == 0);
+    self.lastErrorMessage = ok ? nil : [self reasonForCode:r];
+    if (ok) {
+        [_lock lock];
+        [_map removeObjectForKey:e.bid];
         [_lock unlock];
         [self save];
     }
@@ -198,12 +327,15 @@ static BOOL GHOpenBundle(NSString *bid) {
     BOOL ok = GHOpenBundle(e.bid);
     if (!ok) self.lastErrorMessage = @"临时恢复成功，但系统没能启动它。";
 
-    // 1.5 秒后重新藏回去：正在运行的进程不受“注销登记”影响
+    // 等 App 真的起来再藏回去：大 App（Gmail/微信这类）启动要好几秒，
+    // 太早注销会把正在启动的进程打断，表现就是「点了打不开」。
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)),
                    dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         __strong typeof(weakSelf) self = weakSelf;
-        if (self) [self hide:e];
+        if (!self) return;
+        // 只有这时它还在「登记着」，才说明是临时恢复状态，可以藏回去
+        [self hide:e];
     });
     return ok;
 }

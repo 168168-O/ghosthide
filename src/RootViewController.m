@@ -292,11 +292,67 @@
             if (!self) return;
             self.busy = NO;
             if (!ok) {
-                [self alert:[NSString stringWithFormat:@"没能打开「%@」。\n%@",
-                                                        e.name ?: e.bid, reason ?: @"原因未知。"]];
+                [self offerRepairForEntry:e reason:reason];
             }
         });
     });
+}
+
+#pragma mark - 修复
+
+// 打不开时给出「修复」：按隐藏前拍的注册信息原样重新登记，数据一点不动
+- (void)offerRepairForEntry:(AppEntry *)e reason:(NSString *)reason {
+    if (self.presentedViewController) return;
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:[NSString stringWithFormat:@"「%@」打不开", e.name ?: e.bid]
+                         message:[NSString stringWithFormat:
+                            @"%@\n\n如果是隐藏后又恢复的 App，点「修复」可以按它原来的登记信息重新写回去（数据、账号都不动）。",
+                            reason ?: @"原因未知。"]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"修复" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        [self doRepair:e];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)doRepair:(AppEntry *)e {
+    if (self.busy) return;
+    self.busy = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL ok = [[HideManager shared] repair:e];
+        NSString *reason = [[HideManager shared] lastError];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.busy = NO;
+            [self reloadApps];
+            if (ok) {
+                [self alert:@"已经按原来的登记信息重新写回去了。\n\n如果桌面图标没马上出现，锁屏再点亮一次；然后点开它试试。"];
+            } else {
+                [self alert:[NSString stringWithFormat:@"修复没成功。\n%@\n\n兜底办法：去 App Store 重新安装这个 App，数据不会丢。",
+                                                        reason ?: @"原因未知。"]];
+            }
+        });
+    });
+}
+
+// 左滑「修复」：任何一行都能手动按原登记信息重新写回（不需要等打不开才出现）
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
+        trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.row < 0 || (NSUInteger)ip.row >= self.apps.count) return nil;
+    AppEntry *e = self.apps[(NSUInteger)ip.row];
+    UIContextualAction *fix = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:@"修复"
+                          handler:^(UIContextualAction *action, UIView *src, void (^done)(BOOL)) {
+        done(YES);
+        [self doRepair:e];
+    }];
+    fix.backgroundColor = [UIColor systemOrangeColor];
+    return [UISwipeActionsConfiguration configurationWithActions:@[fix]];
 }
 
 - (void)toggled:(UISwitch *)sw {

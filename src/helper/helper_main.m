@@ -136,30 +136,68 @@ static void loadMCM(void) {
 }
 
 // App 数据容器路径（TrollStore 注册字典里需要）
+// 关键：优先拿「已经存在的」容器，绝不新建——新建出来的是空壳，
+// App 启动后读不到自己的数据，就会表现为「点了没反应 / 一开就退出」。
 static NSString *containerPathForBid(NSString *bid) {
     Class cls = NSClassFromString(@"MCMAppDataContainer");
-    if (!cls) return nil;
-    SEL sel = NSSelectorFromString(@"containerWithIdentifier:createIfNecessary:existed:error:");
-    if (![cls respondsToSelector:sel]) return nil;
-    id (*fn)(id, SEL, NSString *, BOOL, id, id *) = (id (*)(id, SEL, NSString *, BOOL, id, id *))objc_msgSend;
-    id container = fn(cls, sel, bid, YES, nil, nil);
-    if (!container) return nil;
-    SEL usel = NSSelectorFromString(@"url");
-    if (![container respondsToSelector:usel]) return nil;
-    id (*ufn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-    NSURL *u = ufn(container, usel);
-    return u.path;
+    if (cls) {
+        SEL sel = NSSelectorFromString(@"containerWithIdentifier:createIfNecessary:existed:error:");
+        if ([cls respondsToSelector:sel]) {
+            id (*fn)(id, SEL, NSString *, BOOL, id, id *) = (id (*)(id, SEL, NSString *, BOOL, id, id *))objc_msgSend;
+            @try {
+                id container = fn(cls, sel, bid, NO, nil, nil);   // NO = 只查，不建
+                if (container) {
+                    SEL usel = NSSelectorFromString(@"url");
+                    if ([container respondsToSelector:usel]) {
+                        id (*ufn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+                        NSURL *u = ufn(container, usel);
+                        if (u.path.length) return u.path;
+                    }
+                }
+            } @catch (...) {
+            }
+        }
+    }
+
+    // 兜底：直接扫数据容器元数据，按 MCMMetadataIdentifier 找
+    NSString *root = @"/var/mobile/Containers/Data/Application";
+    NSArray *uuids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:nil];
+    for (NSString *uuid in uuids) {
+        NSString *meta = [[[root stringByAppendingPathComponent:uuid]
+                           stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"] copy];
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:meta];
+        id ident = [d isKindOfClass:[NSDictionary class]] ? d[@"MCMMetadataIdentifier"] : nil;
+        if ([ident isKindOfClass:[NSString class]] && [ident isEqualToString:bid]) {
+            return [root stringByAppendingPathComponent:uuid];
+        }
+    }
+    return nil;
 }
 
 // ---------------- 注册（照抄 TrollStore RootHelper/uicache.m 的配方） ----------------
 
-static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid) {
-    NSString *container = containerPathForBid(bid);
+static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDictionary *snap) {
+    // 优先用隐藏前拍下来的真实注册信息（快照），没有才用保守默认值
+    NSString *container = nil;
+    id snapContainer = [snap isKindOfClass:[NSDictionary class]] ? snap[@"Container"] : nil;
+    if ([snapContainer isKindOfClass:[NSString class]] && [snapContainer length] > 0 &&
+        [[NSFileManager defaultManager] fileExistsAtPath:snapContainer]) {
+        container = snapContainer;
+    } else {
+        container = containerPathForBid(bid);
+    }
+
+    id (^pick)(NSString *) = ^id(NSString *key) {
+        id v = [snap isKindOfClass:[NSDictionary class]] ? snap[key] : nil;
+        return v ?: nil;
+    };
 
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
-    d[@"ApplicationType"] = @"User";
+    d[@"ApplicationType"] = [pick(@"ApplicationType") isKindOfClass:[NSString class]]
+                              ? pick(@"ApplicationType") : @"User";
     d[@"CFBundleIdentifier"] = bid;
-    d[@"CodeInfoIdentifier"] = bid;
+    d[@"CodeInfoIdentifier"] = [pick(@"CodeInfoIdentifier") isKindOfClass:[NSString class]]
+                                 ? pick(@"CodeInfoIdentifier") : bid;
     d[@"CompatibilityState"] = @0;
     d[@"IsContainerized"] = @(container != nil);
     if (container) {
@@ -172,10 +210,18 @@ static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid) {
     }
     d[@"IsDeletable"] = @YES;
     d[@"Path"] = path;
-    d[@"SignerOrganization"] = @"Apple Inc.";
-    d[@"SignatureVersion"] = @132352;
-    d[@"SignerIdentity"] = @"Apple iPhone OS Application Signing";
-    d[@"IsAdHocSigned"] = @YES;
+    d[@"SignerOrganization"] = [pick(@"SignerOrganization") isKindOfClass:[NSString class]]
+                                 ? pick(@"SignerOrganization") : @"Apple Inc.";
+    d[@"SignatureVersion"] = [pick(@"SignatureVersion") isKindOfClass:[NSNumber class]]
+                               ? pick(@"SignatureVersion") : @132352;
+    d[@"SignerIdentity"] = [pick(@"SignerIdentity") isKindOfClass:[NSString class]]
+                             ? pick(@"SignerIdentity") : @"Apple iPhone OS Application Signing";
+    // ★ 只有快照里明确是 ad-hoc（TrollStore 装的）才这么写。
+    //   App Store 的 App（Gmail 这类）被标成 ad-hoc 会引发启动异常。
+    if ([pick(@"IsAdHocSigned") respondsToSelector:@selector(boolValue)] &&
+        [pick(@"IsAdHocSigned") boolValue]) {
+        d[@"IsAdHocSigned"] = @YES;
+    }
     d[@"LSInstallType"] = @1;
     d[@"HasMIDBasedSINF"] = @0;
     d[@"MissingSINF"] = @0;
@@ -185,7 +231,7 @@ static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid) {
 }
 
 // 注册：按可靠度从高到低尝试 4 条通道
-static int doRegister(NSString *appPath) {
+static int doRegister(NSString *appPath, NSDictionary *snap) {
     loadMCM();
     id ws = loadWorkspace();
     if (!ws) return 11;
@@ -198,7 +244,7 @@ static int doRegister(NSString *appPath) {
     // 通道 1：TrollStore 官方同款 registerApplicationDictionary
     SEL dictSel = NSSelectorFromString(@"registerApplicationDictionary:");
     if ([ws respondsToSelector:dictSel]) {
-        NSDictionary *d = buildRegisterDictionary(appPath, bid);
+        NSDictionary *d = buildRegisterDictionary(appPath, bid, snap);
         BOOL (*fn)(id, SEL, NSDictionary *) = (BOOL (*)(id, SEL, NSDictionary *))objc_msgSend;
         @try {
             if (fn(ws, dictSel, d)) {
@@ -290,16 +336,32 @@ int main(int argc, char **argv, char **envp) {
             if (appPath.length == 0) return 2;
             if (![appPath hasSuffix:@".app"]) return 2;
 
+            // 第三个参数（可选）：隐藏前拍的注册信息快照 plist
+            NSDictionary *snap = nil;
+            if (argc >= 4 && argv[3]) {
+                NSString *snapPath = [NSString stringWithUTF8String:argv[3]];
+                if (snapPath.length) {
+                    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:snapPath];
+                    if ([d isKindOfClass:[NSDictionary class]]) snap = d;
+                }
+            }
+
             BOOL wantHide = [cmd isEqualToString:@"hide"];
             BOOL wantShow = [cmd isEqualToString:@"show"];
-            if (!wantHide && !wantShow) return 2;
+            BOOL wantRepair = [cmd isEqualToString:@"repair"];
+            if (!wantHide && !wantShow && !wantRepair) return 2;
 
             if (geteuid() != 0) {
                 writeDiagReport();   // 没 root 也要留下实测数据
                 return 10;
             }
 
-            return wantShow ? doRegister(appPath) : doUnregister(appPath);
+            if (wantRepair) {
+                // 修复 = 先注销掉可能错误的旧记录，再按快照原样登记回去
+                doUnregister(appPath);
+                return doRegister(appPath, snap);
+            }
+            return wantShow ? doRegister(appPath, snap) : doUnregister(appPath);
         } @catch (NSException *e) {
             return 13;
         } @catch (...) {
