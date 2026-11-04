@@ -149,6 +149,11 @@
     [_lock unlock];
     if (![snap isKindOfClass:[NSDictionary class]] || snap.count == 0) return nil;
 
+    // 优先写 /var/tmp：helper 是 root 进程，读这里最稳（不受 App 沙盒容器影响）。
+    // 写不进去再退回 App 自己的临时目录。
+    NSString *shared = @"/var/tmp/gh_snap.plist";
+    if ([snap writeToFile:shared atomically:YES]) return shared;
+
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"gh_snap.plist"];
     if (![snap writeToFile:tmp atomically:YES]) return nil;
     return tmp;
