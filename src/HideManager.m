@@ -312,6 +312,48 @@ static BOOL GHOpenBundle(NSString *bid) {
 - (BOOL)hide:(AppEntry *)e { return [self perform:YES entry:e]; }
 - (BOOL)show:(AppEntry *)e { return [self perform:NO  entry:e]; }
 
+#pragma mark - 数据保险（备份 / 还原，保证「里面的信息」不丢）
+
+// helper 把明细写在这个文件里：路径|成功项数|失败项数
+- (NSString *)lastBackupInfo {
+    NSString *s = [NSString stringWithContentsOfFile:@"/var/tmp/ghosthide-backup.txt"
+                                            encoding:NSUTF8StringEncoding
+                                               error:nil];
+    return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+- (BOOL)backupData:(AppEntry *)e {
+    if (!e || e.path.length == 0) {
+        self.lastErrorMessage = @"这个 App 的信息不完整，没法备份。";
+        return NO;
+    }
+    int r = [self runHelper:@"backup" path:e.path extra:nil];
+    if (r == 0) {
+        self.lastErrorMessage = nil;
+        return YES;
+    }
+    self.lastErrorMessage = (r == 10)
+        ? @"备份需要 root 权限，当前没拿到（可以先点「自检」看原因）。"
+        : [self reasonForCode:r];
+    return NO;
+}
+
+- (BOOL)restoreData:(AppEntry *)e {
+    if (!e || e.path.length == 0) {
+        self.lastErrorMessage = @"这个 App 的信息不完整，没法还原。";
+        return NO;
+    }
+    int r = [self runHelper:@"restoredata" path:e.path extra:nil];
+    if (r == 0) {
+        self.lastErrorMessage = nil;
+        return YES;
+    }
+    self.lastErrorMessage = (r == 10)
+        ? @"还原数据需要 root 权限，当前没拿到（可以先点「自检」看原因）。"
+        : [self reasonForCode:r];
+    return NO;
+}
+
 // 打开：没藏的直接开；藏着的先临时登记回来、启动后再自动藏回去
 - (BOOL)openEntry:(AppEntry *)e {
     if (!e || e.bid.length == 0) {

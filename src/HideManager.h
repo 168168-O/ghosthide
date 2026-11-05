@@ -8,6 +8,11 @@
 - (BOOL)show:(AppEntry *)e;
 // 修复：按隐藏前拍的注册快照把这个 App 重新正确登记一遍（“恢复后打不开”用它）
 - (BOOL)repair:(AppEntry *)e;
+// 数据保险：把 App 的数据目录整份备份 / 从最近一次备份还原（信息不丢）
+- (BOOL)backupData:(AppEntry *)e;
+- (BOOL)restoreData:(AppEntry *)e;
+// 最近一次备份/还原的明细（路径|成功项数|失败项数）
+- (NSString *)lastBackupInfo;
 // 打开 App：已隐藏的会先临时登记、启动后自动重新藏回去
 - (BOOL)openEntry:(AppEntry *)e;
 // 当前记录了几个隐藏

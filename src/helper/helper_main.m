@@ -174,6 +174,112 @@ static NSString *containerPathForBid(NSString *bid) {
     return nil;
 }
 
+// ---------------- 数据备份 / 还原（“里面还有很多信息”的保险） ----------------
+
+#define BACKUP_ROOT @"/var/mobile/Library/GhostHide/backups"
+#define BACKUP_INFO_PATH "/var/tmp/ghosthide-backup.txt"
+
+static NSString *bidForAppPath(NSString *appPath) {
+    if (appPath.length == 0) return nil;
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                          [appPath stringByAppendingPathComponent:@"Info.plist"]];
+    id bid = [info isKindOfClass:[NSDictionary class]] ? info[@"CFBundleIdentifier"] : nil;
+    return ([bid isKindOfClass:[NSString class]] && [bid length]) ? bid : nil;
+}
+
+static void writeBackupInfo(NSString *s) {
+    FILE *f = fopen(BACKUP_INFO_PATH, "w");
+    if (!f) return;
+    fprintf(f, "%s\n", s.UTF8String ?: "");
+    fclose(f);
+}
+
+// 把 App 的数据目录整份复制出来，存到 /var/mobile/Library/GhostHide/backups/<bid>/<时间戳>
+static int doBackup(NSString *appPath) {
+    NSString *bid = bidForAppPath(appPath);
+    if (!bid.length) return 2;
+    NSString *container = containerPathForBid(bid);
+    if (!container.length) {
+        writeBackupInfo(@"找不到这个 App 的数据目录，可能它已经被卸载了");
+        return 2;
+    }
+
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.dateFormat = @"yyyyMMdd-HHmmss";
+    NSString *stamp = [df stringFromDate:[NSDate date]];
+    NSString *dest = [[BACKUP_ROOT stringByAppendingPathComponent:bid]
+                      stringByAppendingPathComponent:stamp];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *err = nil;
+    if (![fm createDirectoryAtPath:dest withIntermediateDirectories:YES attributes:nil error:&err]) {
+        writeBackupInfo([NSString stringWithFormat:@"创建备份目录失败：%@",
+                         err.localizedDescription ?: @"未知原因"]);
+        return 13;
+    }
+
+    NSArray *items = [fm contentsOfDirectoryAtPath:container error:nil];
+    NSUInteger okCount = 0, badCount = 0;
+    for (NSString *it in items) {
+        if (![it isKindOfClass:[NSString class]]) continue;
+        if ([it isEqualToString:@"tmp"]) continue;   // 临时文件不备份
+        NSString *src = [container stringByAppendingPathComponent:it];
+        NSString *dst = [dest stringByAppendingPathComponent:it];
+        if ([fm copyItemAtPath:src toPath:dst error:nil]) okCount++;
+        else badCount++;
+    }
+
+    writeBackupInfo([NSString stringWithFormat:@"%@|%lu|%lu", dest,
+                     (unsigned long)okCount, (unsigned long)badCount]);
+    diagLine([NSString stringWithFormat:@"backup %@ -> %@ (%lu ok / %lu fail)",
+              bid, dest, (unsigned long)okCount, (unsigned long)badCount]);
+    return okCount > 0 ? 0 : 1;
+}
+
+static NSString *latestBackupForBid(NSString *bid) {
+    NSString *root = [BACKUP_ROOT stringByAppendingPathComponent:bid];
+    NSArray *subs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:nil];
+    NSString *latest = nil;
+    for (NSString *s in subs) {
+        if (![s isKindOfClass:[NSString class]]) continue;
+        if (!latest || [s compare:latest] == NSOrderedDescending) latest = s;
+    }
+    return latest.length ? [root stringByAppendingPathComponent:latest] : nil;
+}
+
+// 把最近一次备份复制回 App 的数据目录（同名项覆盖）
+static int doRestoreData(NSString *appPath) {
+    NSString *bid = bidForAppPath(appPath);
+    if (!bid.length) return 2;
+    NSString *src = latestBackupForBid(bid);
+    if (!src.length) {
+        writeBackupInfo(@"这个 App 还没有备份");
+        return 2;
+    }
+    NSString *container = containerPathForBid(bid);
+    if (!container.length) {
+        writeBackupInfo(@"App 的数据目录不存在，先恢复 App 再还原数据");
+        return 2;
+    }
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *items = [fm contentsOfDirectoryAtPath:src error:nil];
+    NSUInteger okCount = 0, badCount = 0;
+    for (NSString *it in items) {
+        if (![it isKindOfClass:[NSString class]]) continue;
+        NSString *s = [src stringByAppendingPathComponent:it];
+        NSString *d = [container stringByAppendingPathComponent:it];
+        if ([fm fileExistsAtPath:d]) [fm removeItemAtPath:d error:nil];
+        if ([fm copyItemAtPath:s toPath:d error:nil]) okCount++;
+        else badCount++;
+    }
+    writeBackupInfo([NSString stringWithFormat:@"%@|%lu|%lu", src,
+                     (unsigned long)okCount, (unsigned long)badCount]);
+    diagLine([NSString stringWithFormat:@"restore %@ <- %@ (%lu ok / %lu fail)",
+              bid, src, (unsigned long)okCount, (unsigned long)badCount]);
+    return okCount > 0 ? 0 : 1;
+}
+
 // ---------------- 注册（照抄 TrollStore RootHelper/uicache.m 的配方） ----------------
 
 static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDictionary *snap) {
@@ -349,12 +455,17 @@ int main(int argc, char **argv, char **envp) {
             BOOL wantHide = [cmd isEqualToString:@"hide"];
             BOOL wantShow = [cmd isEqualToString:@"show"];
             BOOL wantRepair = [cmd isEqualToString:@"repair"];
-            if (!wantHide && !wantShow && !wantRepair) return 2;
+            BOOL wantBackup = [cmd isEqualToString:@"backup"];
+            BOOL wantRestoreData = [cmd isEqualToString:@"restoredata"];
+            if (!wantHide && !wantShow && !wantRepair && !wantBackup && !wantRestoreData) return 2;
 
             if (geteuid() != 0) {
                 writeDiagReport();   // 没 root 也要留下实测数据
                 return 10;
             }
+
+            if (wantBackup) return doBackup(appPath);
+            if (wantRestoreData) return doRestoreData(appPath);
 
             if (wantRepair) {
                 // 修复 = 先注销掉可能错误的旧记录，再按快照原样登记回去

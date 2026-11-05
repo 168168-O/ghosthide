@@ -8,6 +8,12 @@
 @interface RootViewController ()
 @property (strong) NSMutableArray *apps;
 @property (assign) BOOL busy;
+- (void)reloadApps;
+- (void)alert:(NSString *)msg;
+- (void)respring;
+- (void)doRepair:(AppEntry *)e;
+- (void)doBackup:(AppEntry *)e;
+- (void)doRestoreData:(AppEntry *)e;
 @end
 
 @implementation RootViewController
@@ -330,13 +336,29 @@
             self.busy = NO;
             [self reloadApps];
             if (ok) {
-                [self alert:@"已经按原来的登记信息重新写回去了。\n\n如果桌面图标没马上出现，锁屏再点亮一次；然后点开它试试。"];
+                [self offerRespringAfterRepair:e];
             } else {
-                [self alert:[NSString stringWithFormat:@"修复没成功。\n%@\n\n兜底办法：去 App Store 重新安装这个 App，数据不会丢。",
+                [self alert:[NSString stringWithFormat:@"修复没成功。\n%@\n\n可以先点「备份数据」把信息保住，再去 App Store 重新安装（备份能还原回来）。",
                                                         reason ?: @"原因未知。"]];
             }
         });
     });
+}
+
+// 修复只是把登记写回去，SpringBoard 还拿着旧的图标缓存，
+// 必须刷新一次桌面（respring）才会真正认这个 App——这是「修完还是点不开」的关键一步。
+- (void)offerRespringAfterRepair:(AppEntry *)e {
+    if (self.presentedViewController) return;
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"登记信息已写回"
+                         message:[NSString stringWithFormat:
+                            @"「%@」的登记已经按原来的信息写回去了。\n\n最后一步：刷新桌面。刷新时这个工具箱会退出、桌面闪一下，都是正常的。刷新完再点「%@」试试。",
+                            e.name ?: e.bid, e.name ?: e.bid]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"稍后" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"刷新桌面" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) { [self respring]; }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 // 左滑「修复」：任何一行都能手动按原登记信息重新写回（不需要等打不开才出现）
@@ -352,7 +374,87 @@
         [self doRepair:e];
     }];
     fix.backgroundColor = [UIColor systemOrangeColor];
-    return [UISwipeActionsConfiguration configurationWithActions:@[fix]];
+
+    // 备份数据：怕丢信息时先点这个，整份复制到安全目录
+    UIContextualAction *bak = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:@"备份数据"
+                          handler:^(UIContextualAction *action, UIView *src, void (^done)(BOOL)) {
+        done(YES);
+        [self doBackup:e];
+    }];
+    bak.backgroundColor = [UIColor systemBlueColor];
+
+    // 还原数据：从最近一次备份复制回去
+    UIContextualAction *rest = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleDestructive
+                            title:@"还原数据"
+                          handler:^(UIContextualAction *action, UIView *src, void (^done)(BOOL)) {
+        done(YES);
+        [self confirmRestoreData:e];
+    }];
+    rest.backgroundColor = [UIColor systemGrayColor];
+
+    return [UISwipeActionsConfiguration configurationWithActions:@[ rest, bak, fix ]];
+}
+
+#pragma mark - 备份 / 还原
+
+- (void)doBackup:(AppEntry *)e {
+    if (self.busy) return;
+    self.busy = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL ok = [[HideManager shared] backupData:e];
+        NSString *info = [[HideManager shared] lastBackupInfo];
+        NSString *reason = [[HideManager shared] lastError];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.busy = NO;
+            if (ok) {
+                [self alert:[NSString stringWithFormat:
+                    @"「%@」的数据已经整份备份好了。\n\n%@\n\n备份存在手机里，即使这个 App 之后出问题、重装，也能从这里还原回来。",
+                    e.name ?: e.bid, info.length ? info : @""]];
+            } else {
+                [self alert:[NSString stringWithFormat:@"备份没成功。\n%@",
+                             reason ?: @"原因未知。"]];
+            }
+        });
+    });
+}
+
+- (void)confirmRestoreData:(AppEntry *)e {
+    if (self.presentedViewController) return;
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"还原数据？"
+                         message:[NSString stringWithFormat:
+                            @"会用最近一次备份覆盖「%@」当前的数据。\n\n只在确实丢了东西的时候用；平时不要点。",
+                            e.name ?: e.bid]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"还原" style:UIAlertActionStyleDestructive
+                                        handler:^(UIAlertAction *x) { [self doRestoreData:e]; }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)doRestoreData:(AppEntry *)e {
+    if (self.busy) return;
+    self.busy = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL ok = [[HideManager shared] restoreData:e];
+        NSString *info = [[HideManager shared] lastBackupInfo];
+        NSString *reason = [[HideManager shared] lastError];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.busy = NO;
+            [self alert:ok
+                ? [NSString stringWithFormat:@"数据已从备份还原。\n\n%@", info.length ? info : @""]
+                : [NSString stringWithFormat:@"还原没成功。\n%@", reason ?: @"原因未知。"]];
+        });
+    });
 }
 
 - (void)toggled:(UISwitch *)sw {
