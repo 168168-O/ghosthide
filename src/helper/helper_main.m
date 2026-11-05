@@ -280,10 +280,155 @@ static int doRestoreData(NSString *appPath) {
     return okCount > 0 ? 0 : 1;
 }
 
-// ---------------- 注册（照抄 TrollStore RootHelper/uicache.m 的配方） ----------------
+// ---------------- 注册（配方来自 TrollStore RootHelper/uicache.m，逐字段对齐） ----------------
 
-static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDictionary *snap) {
-    // 优先用隐藏前拍下来的真实注册信息（快照），没有才用保守默认值
+// 从 App 可执行文件的代码签名里读权限声明（照抄 TrollStore TSUtil.m getStaticCodeRef/dumpEntitlements）
+static NSDictionary *dumpEntitlementsAtPath(NSString *binaryPath) {
+    if (binaryPath.length == 0) return nil;
+    static OSStatus (*pCreate)(CFURLRef, uint32_t, CFDictionaryRef, void **) = NULL;
+    static OSStatus (*pCopyInfo)(void *, uint32_t, CFDictionaryRef *) = NULL;
+    static BOOL resolved = NO;
+    if (!resolved) {
+        resolved = YES;
+        dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
+        pCreate = (OSStatus (*)(CFURLRef, uint32_t, CFDictionaryRef, void **))
+            dlsym(RTLD_DEFAULT, "SecStaticCodeCreateWithPathAndAttributes");
+        pCopyInfo = (OSStatus (*)(void *, uint32_t, CFDictionaryRef *))
+            dlsym(RTLD_DEFAULT, "SecCodeCopySigningInformation");
+    }
+    if (!pCreate || !pCopyInfo) return nil;
+    NSURL *u = [NSURL fileURLWithPath:binaryPath];
+    void *code = NULL;
+    OSStatus r = pCreate((__bridge CFURLRef)u, 0 /*kSecCSDefaultFlags*/, NULL, &code);
+    if (r != 0 || !code) return nil;
+    CFDictionaryRef info = NULL;
+    NSDictionary *out = nil;
+    // 2 = kSecCSRequirementInformation；"entitlements-dict" = kSecCodeInfoEntitlementsDict
+    if (pCopyInfo(code, 2, &info) == 0 && info) {
+        CFDictionaryRef ent = CFDictionaryGetValue(info, CFSTR("entitlements-dict"));
+        if (ent && CFGetTypeID(ent) == CFDictionaryGetTypeID()) {
+            out = [(__bridge NSDictionary *)ent copy];
+        }
+        CFRelease(info);
+    }
+    CFRelease((CFTypeRef)code);
+    return out;
+}
+
+// App Group 容器（照抄 uicache.m constructGroupsContainersForEntitlements）
+static NSDictionary *groupContainersForEntitlements(NSDictionary *ent, BOOL system) {
+    if (![ent isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *key = system ? @"com.apple.security.system-groups"
+                           : @"com.apple.security.application-groups";
+    NSString *clsName = system ? @"MCMSystemDataContainer" : @"MCMSharedDataContainer";
+    NSArray *ids = ent[key];
+    if (![ids isKindOfClass:[NSArray class]] || ids.count == 0) return nil;
+    Class cls = NSClassFromString(clsName);
+    if (!cls) return nil;
+    SEL sel = NSSelectorFromString(@"containerWithIdentifier:createIfNecessary:existed:error:");
+    if (![cls respondsToSelector:sel]) return nil;
+    id (*fn)(id, SEL, NSString *, BOOL, id, id *) = (id (*)(id, SEL, NSString *, BOOL, id, id *))objc_msgSend;
+    id (*ufn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+    NSMutableDictionary *out = [NSMutableDictionary new];
+    for (NSString *gid in ids) {
+        if (![gid isKindOfClass:[NSString class]] || gid.length == 0) continue;
+        @try {
+            id c = fn(cls, sel, gid, YES, nil, nil);
+            NSURL *u = c ? ufn(c, NSSelectorFromString(@"url")) : nil;
+            if (u.path.length) out[gid] = u.path;
+        } @catch (...) {}
+    }
+    return out.count ? [out copy] : nil;
+}
+
+static NSString *teamIdentifierForEntitlements(NSDictionary *ent) {
+    if (![ent isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *t = ent[@"com.apple.developer.team-identifier"];
+    return ([t isKindOfClass:[NSString class]] && t.length) ? t : nil;
+}
+
+// PlugIns 注册信息（照抄 uicache.m 的 _LSBundlePlugins 段；Gmail 的 ShareExtension 靠它）
+static NSDictionary *pluginsForApp(NSString *appPath, NSString *ownerBid) {
+    NSString *pluginsPath = [appPath stringByAppendingPathComponent:@"PlugIns"];
+    NSArray *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pluginsPath error:nil];
+    if (items.count == 0) return nil;
+    NSMutableDictionary *bundlePlugins = [NSMutableDictionary dictionary];
+    for (NSString *name in items) {
+        if (![name isKindOfClass:[NSString class]]) continue;
+        NSString *pluginPath = [pluginsPath stringByAppendingPathComponent:name];
+        NSDictionary *pi = [NSDictionary dictionaryWithContentsOfFile:
+                            [pluginPath stringByAppendingPathComponent:@"Info.plist"]];
+        NSString *pbid = pi[@"CFBundleIdentifier"];
+        if (![pbid isKindOfClass:[NSString class]] || pbid.length == 0) continue;
+        NSString *exe = pi[@"CFBundleExecutable"] ?: pbid;
+        NSDictionary *pent = dumpEntitlementsAtPath([pluginPath stringByAppendingPathComponent:exe]);
+
+        id pluginContainer = nil;
+        Class cls = NSClassFromString(@"MCMPluginKitPluginDataContainer");
+        SEL sel = NSSelectorFromString(@"containerWithIdentifier:createIfNecessary:existed:error:");
+        if (cls && [cls respondsToSelector:sel]) {
+            id (*fn)(id, SEL, NSString *, BOOL, id, id *) = (id (*)(id, SEL, NSString *, BOOL, id, id *))objc_msgSend;
+            @try { pluginContainer = fn(cls, sel, pbid, YES, nil, nil); } @catch (...) {}
+        }
+        NSString *pcPath = nil;
+        if (pluginContainer) {
+            SEL usel = NSSelectorFromString(@"url");
+            if ([pluginContainer respondsToSelector:usel]) {
+                id (*ufn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+                pcPath = ufn(pluginContainer, usel).path;
+            }
+        }
+
+        NSMutableDictionary *pd = [NSMutableDictionary dictionary];
+        if (pent) pd[@"Entitlements"] = pent;
+        pd[@"ApplicationType"] = @"PluginKitPlugin";
+        pd[@"CFBundleIdentifier"] = pbid;
+        pd[@"CodeInfoIdentifier"] = pbid;
+        pd[@"CompatibilityState"] = @0;
+        pd[@"IsContainerized"] = @(pcPath != nil);
+        if (pcPath) {
+            pd[@"Container"] = pcPath;
+            pd[@"EnvironmentVariables"] = @{
+                @"CFFIXED_USER_HOME": pcPath,
+                @"HOME": pcPath,
+                @"TMPDIR": [pcPath stringByAppendingPathComponent:@"tmp"]
+            };
+        }
+        pd[@"Path"] = pluginPath;
+        pd[@"PluginOwnerBundleID"] = ownerBid;
+        pd[@"SignerOrganization"] = @"Apple Inc.";
+        pd[@"SignatureVersion"] = @132352;
+        pd[@"SignerIdentity"] = @"Apple iPhone OS Application Signing";
+        NSString *pteam = teamIdentifierForEntitlements(pent);
+        if (pteam) pd[@"TeamIdentifier"] = pteam;
+
+        NSDictionary *pagc = groupContainersForEntitlements(pent, NO);
+        NSDictionary *psgc = groupContainersForEntitlements(pent, YES);
+        NSMutableDictionary *pgc = [NSMutableDictionary new];
+        if (pagc) [pgc addEntriesFromDictionary:pagc];
+        if (psgc) [pgc addEntriesFromDictionary:psgc];
+        if (pgc.count) {
+            if (pagc.count) pd[@"HasAppGroupContainers"] = @YES;
+            if (psgc.count) pd[@"HasSystemGroupContainers"] = @YES;
+            pd[@"GroupContainers"] = [pgc copy];
+        }
+        bundlePlugins[pbid] = pd;
+    }
+    return bundlePlugins.count ? [bundlePlugins copy] : nil;
+}
+
+static NSDictionary *buildRegisterDictionary(NSString *path0, NSString *bid, NSDictionary *snap) {
+    // 路径标准化（uicache.m 同款：解析符号链接 + 规整）
+    NSString *path = path0.stringByResolvingSymlinksInPath.stringByStandardizingPath;
+    if (path.length == 0) path = path0;
+
+    // 权限直接从二进制的代码签名里读（官方做法）
+    NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfFile:
+        [path stringByAppendingPathComponent:@"Info.plist"]];
+    NSString *exeName = infoPlist[@"CFBundleExecutable"] ?: bid;
+    NSDictionary *ent = dumpEntitlementsAtPath([path stringByAppendingPathComponent:exeName]);
+
+    // 数据容器：优先快照里的真实路径，其次查已存在的（绝不新建空壳）
     NSString *container = nil;
     id snapContainer = [snap isKindOfClass:[NSDictionary class]] ? snap[@"Container"] : nil;
     if ([snapContainer isKindOfClass:[NSString class]] && [snapContainer length] > 0 &&
@@ -298,12 +443,21 @@ static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDi
         return v ?: nil;
     };
 
+    // ApplicationType：用户目录下的是 User（兼容 /var 与 /private/var 两种前缀）
+    BOOL asUser = [path hasPrefix:@"/var/containers"] || [path hasPrefix:@"/private/var/containers"];
+    BOOL isRemovableSystemApp = [[NSFileManager defaultManager] fileExistsAtPath:
+        [@"/System/Library/AppSignatures" stringByAppendingPathComponent:bid]];
+
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
-    d[@"ApplicationType"] = [pick(@"ApplicationType") isKindOfClass:[NSString class]]
-                              ? pick(@"ApplicationType") : @"User";
+
+    // ★ 关键：App Store App 的权限必须原样写回，否则启动校验失败（Gmail 打不开的主因）
+    if (ent) d[@"Entitlements"] = ent;
+
+    d[@"ApplicationType"] = (asUser && !isRemovableSystemApp) ? @"User" : @"System";
     d[@"CFBundleIdentifier"] = bid;
-    d[@"CodeInfoIdentifier"] = [pick(@"CodeInfoIdentifier") isKindOfClass:[NSString class]]
-                                 ? pick(@"CodeInfoIdentifier") : bid;
+    d[@"CodeInfoIdentifier"] = ([pick(@"CodeInfoIdentifier") isKindOfClass:[NSString class]] &&
+                                [(NSString *)pick(@"CodeInfoIdentifier") length] > 0)
+                               ? pick(@"CodeInfoIdentifier") : bid;
     d[@"CompatibilityState"] = @0;
     d[@"IsContainerized"] = @(container != nil);
     if (container) {
@@ -316,16 +470,17 @@ static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDi
     }
     d[@"IsDeletable"] = @YES;
     d[@"Path"] = path;
+
     d[@"SignerOrganization"] = [pick(@"SignerOrganization") isKindOfClass:[NSString class]]
                                  ? pick(@"SignerOrganization") : @"Apple Inc.";
     d[@"SignatureVersion"] = [pick(@"SignatureVersion") isKindOfClass:[NSNumber class]]
                                ? pick(@"SignatureVersion") : @132352;
     d[@"SignerIdentity"] = [pick(@"SignerIdentity") isKindOfClass:[NSString class]]
                              ? pick(@"SignerIdentity") : @"Apple iPhone OS Application Signing";
-    // ★ 只有快照里明确是 ad-hoc（TrollStore 装的）才这么写。
-    //   App Store 的 App（Gmail 这类）被标成 ad-hoc 会引发启动异常。
-    if ([pick(@"IsAdHocSigned") respondsToSelector:@selector(boolValue)] &&
-        [pick(@"IsAdHocSigned") boolValue]) {
+    // ad-hoc 标记：快照里是什么就写什么；没有快照按官方默认 YES
+    if ([pick(@"IsAdHocSigned") respondsToSelector:@selector(boolValue)]) {
+        if ([pick(@"IsAdHocSigned") boolValue]) d[@"IsAdHocSigned"] = @YES;
+    } else {
         d[@"IsAdHocSigned"] = @YES;
     }
     d[@"LSInstallType"] = @1;
@@ -333,6 +488,31 @@ static NSDictionary *buildRegisterDictionary(NSString *path, NSString *bid, NSDi
     d[@"MissingSINF"] = @0;
     d[@"FamilyID"] = @0;
     d[@"IsOnDemandInstallCapable"] = @0;
+
+    // ★ TeamIdentifier（官方从权限里取）
+    NSString *team = teamIdentifierForEntitlements(ent);
+    if (team) d[@"TeamIdentifier"] = team;
+
+    // ★ App Group 容器（Google 系等 App 共享数据靠它）
+    NSDictionary *agc = groupContainersForEntitlements(ent, NO);
+    NSDictionary *sgc = groupContainersForEntitlements(ent, YES);
+    NSMutableDictionary *gc = [NSMutableDictionary new];
+    if (agc) [gc addEntriesFromDictionary:agc];
+    if (sgc) [gc addEntriesFromDictionary:sgc];
+    if (gc.count) {
+        if (agc.count) d[@"HasAppGroupContainers"] = @YES;
+        if (sgc.count) d[@"HasSystemGroupContainers"] = @YES;
+        d[@"GroupContainers"] = [gc copy];
+    }
+
+    // ★ 插件（Gmail 的 ShareExtension 等，注册不完整会导致 LS 记录残缺）
+    NSDictionary *pl = pluginsForApp(path, bid);
+    if (pl) d[@"_LSBundlePlugins"] = pl;
+
+    diagLine([NSString stringWithFormat:@"dict: ent=%@ team=%@ groups=%lu plugins=%lu container=%@",
+              ent ? @"YES" : @"no", team ?: @"-",
+              (unsigned long)gc.count, (unsigned long)pl.count, container ?: @"-"]);
+
     return d;
 }
 
