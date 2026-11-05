@@ -375,7 +375,7 @@ static NSDictionary *pluginsForApp(NSString *appPath, NSString *ownerBid) {
             SEL usel = NSSelectorFromString(@"url");
             if ([pluginContainer respondsToSelector:usel]) {
                 id (*ufn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-                pcPath = ufn(pluginContainer, usel).path;
+                pcPath = ((NSURL *)ufn(pluginContainer, usel)).path;
             }
         }
 
